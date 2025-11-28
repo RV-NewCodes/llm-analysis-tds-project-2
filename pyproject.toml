@@ -3,7 +3,7 @@ name = "tdsproject2"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "playwright>=1.56.0",
     "beautifulsoup4>=4.14.2",
@@ -36,3 +36,7 @@ dependencies = [
     "scipy>=1.16.3",
     "haversine>=2.9.0",
 ]
+
+[tool.setuptools]
+# Tell setuptools EXACTLY which top-level modules to package
+py-modules = ["agent", "main", "shared_store"]
