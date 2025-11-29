@@ -6,94 +6,131 @@ import requests
 import json
 from collections import defaultdict
 from typing import Any, Dict, Optional
+from dotenv import load_dotenv
+
+load_dotenv()
+
+EMAIL = os.getenv("EMAIL", "").strip()
+SECRET = os.getenv("SECRET", "").strip()
 
 cache = defaultdict(int)
 retry_limit = 4
+
 @tool
-def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, str]] = None) -> Any:
+def post_request(
+    url: str,
+    payload: Dict[str, Any],
+    headers: Optional[Dict[str, str]] = None
+) -> Any:
     """
     Send an HTTP POST request to the given URL with the provided payload.
 
-    This function is designed for LangGraph applications, where it can be wrapped
-    as a Tool or used inside a Runnable to call external APIs, webhooks, or backend
-    services during graph execution.
-    REMEMBER: This a blocking function so it may take a while to return. Wait for the response.
+    IMPORTANT: This tool ALWAYS injects the correct email & secret
+    from environment variables and NEVER trusts the LLM for identity fields.
+
     Args:
-        url (str): The endpoint to send the POST request to.
+        url (str): The SUBMIT endpoint to send the POST request to.
         payload (Dict[str, Any]): The JSON-serializable request body.
-        headers (Optional[Dict[str, str]]): Optional HTTP headers to include
-            in the request. If omitted, a default JSON header is applied.
+            LLM may fill in 'answer' and 'url' (quiz URL), but 'email'
+            and 'secret' are always overridden from env.
+        headers (Optional[Dict[str, str]]): Optional HTTP headers.
 
     Returns:
-        Any: The response body. If the server returns JSON, a parsed dict is
-        returned. Otherwise, the raw text response is returned.
-
-    Raises:
-        requests.HTTPError: If the server responds with an unsuccessful status.
-        requests.RequestException: For network-related errors.
+        Any: Parsed JSON response if available, else raw text or error.
     """
-    # Handling if the answer is a BASE64
-    ans = payload.get("answer")
+    # Ensure headers
+    headers = headers or {"Content-Type": "application/json"}
 
+    # Ensure we always send our own identity, not LLM's
+    payload = dict(payload)  # copy to avoid mutating original
+    payload["email"] = EMAIL
+    payload["secret"] = SECRET
+
+    # If quiz URL is missing, fall back to current env url
+    if not payload.get("url"):
+        payload["url"] = os.getenv("url", "")
+
+    # Handle BASE64 placeholder
+    ans = payload.get("answer")
     if isinstance(ans, str) and ans.startswith("BASE64_KEY:"):
         key = ans.split(":", 1)[1]
-        payload["answer"] = BASE64_STORE[key]
-    headers = headers or {"Content-Type": "application/json"}
-    try:
-        cur_url = os.getenv("url")
-        cache[cur_url] += 1
-        sending = payload
-        if isinstance(payload.get("answer"), str):
-            sending = {
-                "answer": payload.get("answer", "")[:100],
-                "email": payload.get("email", ""),
-                "url": payload.get("url", "")
-            }
-        print(f"\nSending Answer \n{json.dumps(sending, indent=4)}\n to url: {url}")
-        response = requests.post(url, json=payload, headers=headers)
+        if key in BASE64_STORE:
+            payload["answer"] = BASE64_STORE[key]
 
-        # Raise on 4xx/5xx
+    try:
+        cur_url = os.getenv("url", "")
+        cache[cur_url] += 1
+
+        # Short preview for logs (don’t spam full base64 or huge answers)
+        sending_preview = {
+            "answer": str(payload.get("answer", ""))[:100],
+            "email": payload.get("email", ""),
+            "url": payload.get("url", "")
+        }
+        print(f"\nSending Answer \n{json.dumps(sending_preview, indent=4)}\n to url: {url}")
+
+        response = requests.post(url, json=payload, headers=headers)
         response.raise_for_status()
 
-        # Try to return JSON, fallback to raw text
-        data = response.json()
-        print("Got the response: \n", json.dumps(data, indent=4), '\n')
-        
-        delay = time.time() - url_time.get(cur_url, time.time())
+        # Try to parse JSON
+        try:
+            data = response.json()
+        except ValueError:
+            data = {"raw": response.text}
+
+        print("Got the response: \n", json.dumps(data, indent=4), "\n")
+
+        # Timing / retry logic
+        now = time.time()
+        start_time_for_cur = url_time.get(cur_url, now)
+        delay = now - start_time_for_cur
         print(delay)
-        next_url = data.get("url") 
+
+        next_url = data.get("url")
         if not next_url:
-            return "Tasks completed"
+            # No next URL => quiz likely over
+            return data
+
+        # Initialize timing for new URL
         if next_url not in url_time:
             url_time[next_url] = time.time()
 
         correct = data.get("correct")
+
         if not correct:
+            # Decide whether to retry or move on
             cur_time = time.time()
-            prev = url_time.get(next_url, time.time())
-            if cache[cur_url] >= retry_limit or delay >= 180 or (prev != "0" and (cur_time - float(prev)) > 90): # Shouldn't retry
+            prev = url_time.get(next_url, cur_time)
+            too_many_retries = cache[cur_url] >= retry_limit
+            too_slow = delay >= 180
+            too_long_on_next = (cur_time - float(prev)) > 90
+
+            if too_many_retries or too_slow or too_long_on_next:
                 print("Not retrying, moving on to the next question")
-                data = {"url": data.get("url", "")} 
-            else: # Retry
-                os.environ["offset"] = str(url_time.get(next_url, time.time()))
-                print("Retrying..")
+                # Force move to whatever next URL server gave
+                data = {"url": data.get("url", "")}
+            else:
+                # Retry current quiz
+                os.environ["offset"] = str(url_time.get(next_url, cur_time))
+                print("Retrying on same question..")
                 data["url"] = cur_url
-                data["message"] = "Retry Again!" 
-        print("Formatted: \n", json.dumps(data, indent=4), '\n')
+                data["message"] = "Retry Again!"
+
+        print("Formatted: \n", json.dumps(data, indent=4), "\n")
+
         forward_url = data.get("url", "")
-        os.environ["url"] = forward_url 
+        os.environ["url"] = forward_url
         if forward_url == next_url:
             os.environ["offset"] = "0"
 
         return data
-    except requests.HTTPError as e:
-        # Extract server’s error response
-        err_resp = e.response
 
+    except requests.HTTPError as e:
+        resp = e.response
         try:
-            err_data = err_resp.json()
+            err_data = resp.json()
         except ValueError:
-            err_data = err_resp.text
+            err_data = resp.text
 
         print("HTTP Error Response:\n", err_data)
         return err_data
