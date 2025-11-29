@@ -41,6 +41,7 @@ This project was developed for the TDS (Tools in Data Science) course project, w
 - **Data visualization**: Generating charts, narratives, and presentations
 
 The system receives quiz URLs via a REST API, navigates through multiple quiz pages, solves each task using LLM-powered reasoning and specialized tools, and submits answers back to the evaluation server.
+Based on template from saivijayragav/LLM-Analysis-TDS-Project-2, customized for IITM TDS Project-2.
 
 ## 🏗️ Architecture
 
