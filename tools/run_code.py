@@ -1,12 +1,9 @@
-
-from google import genai
 import subprocess
 from langchain_core.tools import tool
 from dotenv import load_dotenv
 import os
-from google.genai import types
+
 load_dotenv()
-client = genai.Client()
 
 def strip_code_fences(code: str) -> str:
     code = code.strip()
@@ -21,17 +18,13 @@ def strip_code_fences(code: str) -> str:
 @tool
 def run_code(code: str) -> dict:
     """
-    Executes a Python code 
+    Executes Python code.
+
     This tool:
       1. Takes in python code as input
-      3. Writes code into a temporary .py file
-      4. Executes the file
-      5. Returns its output
-
-    Parameters
-    ----------
-    code : str
-        Python source code to execute.
+      2. Writes code into a temporary .py file
+      3. Executes the file with `uv run`
+      4. Returns its output
 
     Returns
     -------
@@ -42,10 +35,15 @@ def run_code(code: str) -> dict:
             "return_code": <exit code>
         }
     """
-    try: 
+    try:
+        # Clean up ```python fences if the LLM included them
+        code = strip_code_fences(code)
+
         filename = "runner.py"
         os.makedirs("LLMFiles", exist_ok=True)
-        with open(os.path.join("LLMFiles", filename), "w") as f:
+        file_path = os.path.join("LLMFiles", filename)
+
+        with open(file_path, "w", encoding="utf-8") as f:
             f.write(code)
 
         proc = subprocess.Popen(
@@ -56,16 +54,19 @@ def run_code(code: str) -> dict:
             cwd="LLMFiles"
         )
         stdout, stderr = proc.communicate()
-        if len(stdout) >= 10000:
-            return stdout[:10000] + "...truncated due to large size"
-        if len(stderr) >= 10000:
-            return stderr[:10000] + "...truncated due to large size"
-        # --- Step 4: Return everything ---
+
+        # Truncate long outputs but keep the dict structure
+        if len(stdout) > 10000:
+            stdout = stdout[:10000] + "...truncated due to large size"
+        if len(stderr) > 10000:
+            stderr = stderr[:10000] + "...truncated due to large size"
+
         return {
             "stdout": stdout,
             "stderr": stderr,
             "return_code": proc.returncode
         }
+
     except Exception as e:
         return {
             "stdout": "",
