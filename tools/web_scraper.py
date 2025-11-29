@@ -11,7 +11,7 @@ def get_rendered_html(url: str) -> dict:
     print("\nFetching and rendering:", url)
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
             page = browser.new_page()
 
             page.goto(url, wait_until="networkidle")
