@@ -33,5 +33,3 @@ def get_rendered_html(url: str) -> dict:
 
     except Exception as e:
         return {"error": f"Error fetching/rendering page: {str(e)}"}
-
-
