@@ -72,26 +72,9 @@ def post_request(
         if next_url not in url_time:
             url_time[next_url] = time.time()
 
-        correct = data.get("correct")
-        if not correct:
-            cur_time = time.time()
-            prev = url_time.get(next_url, time.time())
-            if (
-                cache[cur_url] >= retry_limit
-                or delay >= 180
-                or (prev != "0" and (cur_time - float(prev)) > 90)
-            ):
-                print("Not retrying, moving on to the next question")
-                data = {"url": data.get("url", "")}
-            else:
-                os.environ["offset"] = str(url_time.get(next_url, time.time()))
-                print("Retrying..")
-                data["url"] = cur_url
-                data["message"] = "Retry Again!"
 
         print("Formatted: \n", json.dumps(data, indent=4), "\n")
         forward_url = data.get("url", "")
-        os.environ["url"] = forward_url
         if forward_url == next_url:
             os.environ["offset"] = "0"
 
