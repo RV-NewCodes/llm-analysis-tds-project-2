@@ -16,6 +16,7 @@ SECRET = os.getenv("SECRET", "").strip()
 cache = defaultdict(int)
 retry_limit = 4
 
+
 @tool
 def post_request(
     url: str,
@@ -25,17 +26,21 @@ def post_request(
     """
     Send an HTTP POST request to the given URL with the provided payload.
 
-    It automatically injects your EMAIL and SECRET env vars if they are
-    missing or empty in the payload.
+    It automatically injects EMAIL and SECRET from env vars if missing.
+    It also propagates the next URL so the agent can continue.
     """
 
-    # 1) expand BASE64 placeholder if needed
+    # -------------------------------------------------
+    # 1) Expand BASE64 placeholder if needed
+    # -------------------------------------------------
     ans = payload.get("answer")
     if isinstance(ans, str) and ans.startswith("BASE64_KEY:"):
         key = ans.split(":", 1)[1]
-        payload["answer"] = BASE64_STORE[key]
+        payload["answer"] = BASE64_STORE.get(key, "")
 
-    # 2) ALWAYS ensure email & secret are set from env
+    # -------------------------------------------------
+    # 2) Ensure email & secret
+    # -------------------------------------------------
     if not payload.get("email"):
         payload["email"] = EMAIL
     if not payload.get("secret"):
@@ -44,46 +49,57 @@ def post_request(
     headers = headers or {"Content-Type": "application/json"}
 
     try:
-        cur_url = os.getenv("url")
+        cur_url = os.getenv("url", "")
         cache[cur_url] += 1
 
-        # short log (don’t dump full secret)
+        # -------------------------------------------------
+        # 3) Log (safe, no secrets)
+        # -------------------------------------------------
         sending_log = {
             "answer": str(payload.get("answer"))[:100],
             "email": payload.get("email", ""),
             "url": payload.get("url", ""),
             "has_secret": bool(payload.get("secret")),
         }
-        print(f"\nSending Answer \n{json.dumps(sending_log, indent=4)}\n to url: {url}")
+        print(
+            f"\nSending Answer\n{json.dumps(sending_log, indent=4)}\n→ POST {url}"
+        )
 
-        response = requests.post(url, json=payload, headers=headers)
+        # -------------------------------------------------
+        # 4) POST request
+        # -------------------------------------------------
+        response = requests.post(url, json=payload, headers=headers, timeout=20)
         response.raise_for_status()
 
         data = response.json()
-        print("Got the response: \n", json.dumps(data, indent=4), "\n")
+        print("Got response:\n", json.dumps(data, indent=4), "\n")
 
+        # -------------------------------------------------
+        # 5) Timing bookkeeping
+        # -------------------------------------------------
         delay = time.time() - url_time.get(cur_url, time.time())
-        print(delay)
+        print("Delay:", delay)
 
+        # -------------------------------------------------
+        # 6) Handle next URL (THIS IS THE IMPORTANT FIX)
+        # -------------------------------------------------
         next_url = data.get("url")
         if not next_url:
             return "Tasks completed"
 
-        if next_url not in url_time:
-            url_time[next_url] = time.time()
+        # Store timing for next task
+        url_time[next_url] = time.time()
 
+        # 🔴 CRITICAL: propagate next URL globally
+        os.environ["url"] = next_url
 
-        print("Formatted: \n", json.dumps(data, indent=4), "\n")
-        forward_url = data.get("url", "")
-        if forward_url == next_url:
-            os.environ["offset"] = "0"
-
+        print("Formatted:\n", json.dumps(data, indent=4), "\n")
         return data
 
     except requests.HTTPError as e:
         try:
             err_data = e.response.json()
-        except ValueError:
+        except Exception:
             err_data = e.response.text
         print("HTTP Error Response:\n", err_data)
         return err_data
